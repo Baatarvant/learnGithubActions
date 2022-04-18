@@ -1,0 +1,99 @@
+# The name of your workflow
+name: CI/CD with Github actions
+
+# Controls when the workflow will run
+'on':
+  # Triggers the workflow on push or pull request events but only for the main branch
+  pull_request:
+    branches: [ main ]
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+
+  # This workflow contains a single job called "preview"
+  preview:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Step 1 - Checks-out your repository under $GITHUB_WORKSPACE
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+          cache: 'yarn'
+
+      - name: Project build
+        run: |
+          yarn build
+          yarn export
+
+      # Runs a set of commands using the runners shell
+      - name: Firebase preview deploy
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        id: preview
+        with:
+          repoToken: '${{ secrets.$GITHUBTOKEN }}'
+          firebaseServiceAccount: '${{ secrets.$GITHUBTOKEN }}'
+          # expires date
+          expires: 5d
+          projectId: ******* 
+          target: *******
+
+      # Runs a set of commands using the runners shell
+      - name: Lighthouse audit on preview page
+        id: lighthouse_audit
+        uses: treosh/lighthouse-ci-action@v8
+        with:
+          urls: |
+            ${{steps.preview.outputs.details_url}}
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+      # Runs a set of commands using the runners shell
+      - name: Format lighthouse score
+        id: format_lighthouse_score
+        uses: actions/github-script@v3
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            const result = ${{ steps.lighthouse_audit.outputs.manifest }}[0].summary
+            const links = ${{ steps.lighthouse_audit.outputs.links }}
+            const formatResult = (res) => Math.round((res * 100))
+            Object.keys(result).forEach(key => result[key] = formatResult(result[key]))
+            const score = res => res >= 90 ? '🟢' : res >= 50 ? '🟠' : '🔴'
+            const comment = [
+                `⚡️ [Lighthouse report](${Object.values(links)[0]}) for the changes in this PR:`,
+                '| Category | Score |',
+                '| --- | --- |',
+                `| ${score(result.performance)} Performance | ${result.performance} |`,
+                `| ${score(result.accessibility)} Accessibility | ${result.accessibility} |`,
+                `| ${score(result['best-practices'])} Best practices | ${result['best-practices']} |`,
+                `| ${score(result.seo)} SEO | ${result.seo} |`,
+                `| ${score(result.pwa)} PWA | ${result.pwa} |`,
+                ' ',
+                `*Lighthouse ran on [${Object.keys(links)[0]}](${Object.keys(links)[0]})*`
+            ].join('\n')
+             core.setOutput("comment", comment);
+
+      # Runs a set of commands using the runners shell
+      - name: Add the lighthouse report to pull request
+        id: comment_to_pr
+        uses: marocchino/sticky-pull-request-comment@v1
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          number: ${{ github.event.issue.number }}
+          header: lighthouse
+          message: |
+            ${{ steps.format_lighthouse_score.outputs.comment }}
+
+      # Jest coverage report
+      - name: Jest coverage report
+        uses: ArtiomTr/jest-coverage-report-action@v2.0-rc.6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          package-manager: yarn
+          test-script: yarn coverage
